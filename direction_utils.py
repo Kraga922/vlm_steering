@@ -227,77 +227,150 @@ def safe_model_predict_proba(model, X):
         # Return default predictions
         return np.full((X.shape[0], 1), 0.5)
 
-def get_hidden_states(prompts, model, tokenizer, hidden_layers, forward_batch_size, rep_token=-1, all_positions=False):
+# def get_hidden_states(prompts, model, tokenizer, hidden_layers, forward_batch_size, rep_token=-1, all_positions=False):
 
-    if isinstance(prompts, np.ndarray):
-        prompts = prompts.tolist()
+#     if isinstance(prompts, np.ndarray):
+#         prompts = prompts.tolist()
 
-    try: 
-        name = model._get_name()
-        seq2seq = (name=='T5ForConditionalGeneration')
-    except:
-        seq2seq = False
+#     try: 
+#         name = model._get_name()
+#         seq2seq = (name=='T5ForConditionalGeneration')
+#     except:
+#         seq2seq = False
 
-    if seq2seq:
-        encoded_inputs = tokenizer(prompts, return_tensors='pt', padding=True).to(model.device)
-    else:
-        encoded_inputs = tokenizer(prompts, return_tensors='pt', padding=True, add_special_tokens=False).to(model.device)
-        encoded_inputs['attention_mask'] = encoded_inputs['attention_mask'].half()
+#     if seq2seq:
+#         encoded_inputs = tokenizer(prompts, return_tensors='pt', padding=True).to(model.device)
+#     else:
+#         encoded_inputs = tokenizer(prompts, return_tensors='pt', padding=True, add_special_tokens=False).to(model.device)
+#         encoded_inputs['attention_mask'] = encoded_inputs['attention_mask'].half()
     
-    dataset = TensorDataset(encoded_inputs['input_ids'], encoded_inputs['attention_mask'])
-    dataloader = DataLoader(dataset, batch_size=forward_batch_size)
+#     dataset = TensorDataset(encoded_inputs['input_ids'], encoded_inputs['attention_mask'])
+#     dataloader = DataLoader(dataset, batch_size=forward_batch_size)
 
-    all_hidden_states = {}
-    for layer_idx in hidden_layers:
-        all_hidden_states[layer_idx] = []
+#     all_hidden_states = {}
+#     for layer_idx in hidden_layers:
+#         all_hidden_states[layer_idx] = []
 
-    use_concat = list(hidden_layers)==['concat']
+#     use_concat = list(hidden_layers)==['concat']
 
-    # Loop over batches and accumulate outputs
-    print("Getting activations from forward passes")
-    with torch.no_grad():
-        for batch in tqdm(dataloader):
-            input_ids, attention_mask = batch
+#     # Loop over batches and accumulate outputs
+#     print("Getting activations from forward passes")
+#     with torch.no_grad():
+#         for batch in tqdm(dataloader):
+#             input_ids, attention_mask = batch
 
-            if seq2seq:
-                encoder_outputs = model.encoder(
-                    input_ids=input_ids,
-                    output_hidden_states=True
-                )                
-                out_hidden_states = encoder_outputs.hidden_states
+#             if seq2seq:
+#                 encoder_outputs = model.encoder(
+#                     input_ids=input_ids,
+#                     output_hidden_states=True
+#                 )                
+#                 out_hidden_states = encoder_outputs.hidden_states
 
-                decoder_input_ids = torch.tensor([[model.config.decoder_start_token_id]]).cuda()
-                decoder_outputs = model.decoder(
-                    input_ids=decoder_input_ids,
-                    encoder_hidden_states=encoder_outputs.last_hidden_state,
-                    output_hidden_states=True
-                )
-                out_hidden_states = decoder_outputs.hidden_states
+#                 decoder_input_ids = torch.tensor([[model.config.decoder_start_token_id]]).cuda()
+#                 decoder_outputs = model.decoder(
+#                     input_ids=decoder_input_ids,
+#                     encoder_hidden_states=encoder_outputs.last_hidden_state,
+#                     output_hidden_states=True
+#                 )
+#                 out_hidden_states = decoder_outputs.hidden_states
 
-                num_layers = len(out_hidden_states)-1 # exclude embedding layer
-            else:
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
-                num_layers = len(model.model.layers)
-                out_hidden_states = outputs.hidden_states
+#                 num_layers = len(out_hidden_states)-1 # exclude embedding layer
+#             else:
+#                 outputs = model(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
+#                 num_layers = len(model.model.layers)
+#                 out_hidden_states = outputs.hidden_states
             
-            hidden_states_all_layers = []
-            for layer_idx, hidden_state in zip(range(-1, -num_layers, -1), reversed(out_hidden_states)):
+#             hidden_states_all_layers = []
+#             for layer_idx, hidden_state in zip(range(-1, -num_layers, -1), reversed(out_hidden_states)):
                 
-                if use_concat:
-                    hidden_states_all_layers.append(hidden_state[:,rep_token,:].detach().cpu())
-                elif all_positions:
-                    all_hidden_states[layer_idx].append(hidden_state.detach().cpu())
-                else:
-                    all_hidden_states[layer_idx].append(hidden_state[:,rep_token,:].detach().cpu())
+#                 if use_concat:
+#                     hidden_states_all_layers.append(hidden_state[:,rep_token,:].detach().cpu())
+#                 elif all_positions:
+#                     all_hidden_states[layer_idx].append(hidden_state.detach().cpu())
+#                 else:
+#                     all_hidden_states[layer_idx].append(hidden_state[:,rep_token,:].detach().cpu())
                     
-            if use_concat:
-                hidden_states_all_layers = torch.cat(hidden_states_all_layers, dim=1)
-                all_hidden_states['concat'].append(hidden_states_all_layers)
+#             if use_concat:
+#                 hidden_states_all_layers = torch.cat(hidden_states_all_layers, dim=1)
+#                 all_hidden_states['concat'].append(hidden_states_all_layers)
                       
-    # Concatenate results from all batches
+#     # Concatenate results from all batches
+#     final_hidden_states = {}
+#     for layer_idx, hidden_state_list in all_hidden_states.items():
+#         final_hidden_states[layer_idx] = torch.cat(hidden_state_list, dim=0)
+        
+#     return final_hidden_states
+
+def get_hidden_states(data, model, tokenizer_or_processor, hidden_layers, forward_batch_size, rep_token=-1, all_positions=False, is_vlm=False):
+    """
+    data: List of strings (LLM) or List of dicts (VLM processor output)
+    """
+    all_hidden_states = {layer_idx: [] for layer_idx in hidden_layers}
+    use_concat = list(hidden_layers) == ['concat']
+
+    # 1. Handle VLM vs LLM Input Processing
+    if is_vlm:
+        # data is a list of dicts from processor(...)
+        # We need to collate them manually since they contain images/pixel_values
+        batches = [data[i:i + forward_batch_size] for i in range(0, len(data), forward_batch_size)]
+    else:
+        # Standard LLM logic
+        if isinstance(data, np.ndarray): data = data.tolist()
+        encoded_inputs = tokenizer_or_processor(data, return_tensors='pt', padding=True, add_special_tokens=False).to(model.device)
+        dataset = TensorDataset(encoded_inputs['input_ids'], encoded_inputs['attention_mask'])
+        dataloader = DataLoader(dataset, batch_size=forward_batch_size)
+        batches = dataloader
+
+    print(f"Getting activations from forward passes (VLM={is_vlm})")
+    with torch.no_grad():
+        for batch in tqdm(batches):
+            if is_vlm:
+                # Manually prepare the batch dict for the VLM
+                # We combine individual processor outputs into one batch
+                input_dict = {}
+                for key in batch[0].keys():
+                    input_dict[key] = torch.cat([b[key] for b in batch]).to(model.device)
+                
+                outputs = model(**input_dict, output_hidden_states=True)
+            else:
+                input_ids, attention_mask = batch
+                input_ids, attention_mask = input_ids.to(model.device), attention_mask.to(model.device)
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
+
+            out_hidden_states = outputs.hidden_states # Tuple of (layers+1)
+            
+            # Qwen architecture check
+            if hasattr(model, 'model') and hasattr(model.model, 'layers'):
+                num_layers = len(model.model.layers)
+            else:
+                num_layers = len(out_hidden_states) - 1
+
+            hidden_states_all_layers = []
+            # Iterate through requested layers
+            for layer_idx in hidden_layers:
+                if layer_idx == 'concat': continue
+                
+                # Convert negative index (e.g., -1) to absolute for out_hidden_states
+                # out_hidden_states[0] is embedding, [-1] is final layer
+                h = out_hidden_states[layer_idx]
+                
+                if all_positions:
+                    all_hidden_states[layer_idx].append(h.detach().cpu())
+                else:
+                    # For VLMs, we steer at the last token of the sequence 
+                    # (where the multimodal fusion has completed)
+                    all_hidden_states[layer_idx].append(h[:, rep_token, :].detach().cpu())
+
+            if use_concat:
+                # Concatenate along feature dimension if requested
+                concatenated = torch.cat([out_hidden_states[l][:, rep_token, :].detach().cpu() for l in range(-1, -6, -1)], dim=-1)
+                all_hidden_states['concat'].append(concatenated)
+
+    # Final concatenation across batches
     final_hidden_states = {}
     for layer_idx, hidden_state_list in all_hidden_states.items():
-        final_hidden_states[layer_idx] = torch.cat(hidden_state_list, dim=0)
+        if len(hidden_state_list) > 0:
+            final_hidden_states[layer_idx] = torch.cat(hidden_state_list, dim=0)
         
     return final_hidden_states
 

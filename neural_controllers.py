@@ -33,10 +33,20 @@ class NeuralController:
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.control_method = control_method
-        self.name = None
-
-        print(f"n_components: {n_components}")
-
+        
+        # --- ARCHITECTURE AWARE LAYER COUNTING ---
+        # Qwen3-VL and similar VLMs nest text params in 'text_config'
+        config = model.config
+        if hasattr(config, "text_config"):
+            num_layers = config.text_config.num_hidden_layers
+        elif hasattr(config, "num_hidden_layers"):
+            num_layers = config.num_hidden_layers
+        elif hasattr(config, "num_layers"):
+            num_layers = config.num_layers
+        else:
+            # Absolute fallback for Qwen
+            num_layers = getattr(config, "num_hidden_layers", 40) 
+            
         hparams = {
             'control_method' : control_method,
             'rfm_iters' : rfm_iters,
@@ -47,7 +57,30 @@ class NeuralController:
         }
         self.hyperparams = hparams
         
-        self.hidden_layers = list(range(-1, -model.config.num_hidden_layers, -1))
+        # Now this will not throw an AttributeError
+        self.hidden_layers = list(range(-1, -num_layers, -1))
+
+# class NeuralController:
+#     def __init__(self, model, tokenizer, control_method='rfm', n_components=5, 
+#                  rfm_iters=10, batch_size=2, calibrate=False):
+#         self.model = model.eval()
+#         self.tokenizer = tokenizer
+#         self.control_method = control_method
+#         self.name = None
+
+#         print(f"n_components: {n_components}")
+
+#         hparams = {
+#             'control_method' : control_method,
+#             'rfm_iters' : rfm_iters,
+#             'forward_batch_size' : batch_size,
+#             'M_batch_size' : 2048,
+#             'n_components' : n_components,
+#             'calibrate' : calibrate
+#         }
+#         self.hyperparams = hparams
+        
+#         self.hidden_layers = list(range(-1, -model.config.num_hidden_layers, -1))
         print('Hidden layers KA:', self.hidden_layers)
         self.toolkit = TOOLKITS[control_method]()
         self.signs = None
